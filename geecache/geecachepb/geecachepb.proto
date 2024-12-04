@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package geecachepb;
+
+option go_package = "./;geecachepb";  // 添加 go_package 选项
+
+message Request {
+  string group = 1;
+  string key = 2;
+}
+
+message Response {
+  bytes value = 1;
+}
+
+service GroupCache {
+  rpc Get(Request) returns (Response);
+}
+
+//Request 包含 2 个字段， group 和 cache，这与我们之前定义的接口 /_geecache/<group>/<name> 所需的参数吻合。
+//Response 包含 1 个字段，bytes，类型为 byte 数组，与之前吻合。
+
+//protoc --go_out=. --go_opt=paths=source_relative geecachepb.proto
+//--go_out=.：表示将生成的 Go 文件放到当前目录。
+//--go_opt=paths=source_relative：确保生成的 Go 文件路径是相对的，而不是绝对路径。

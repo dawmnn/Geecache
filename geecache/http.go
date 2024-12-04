@@ -3,6 +3,8 @@ package geecache
 import (
 	"fmt"
 	"geecache/consistenthash"
+	pb "geecache/geecachepb"
+	"google.golang.org/protobuf/proto"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -10,6 +12,12 @@ import (
 	"strings"
 	"sync"
 )
+
+//使用 protobuf 的目的非常简单，为了获得更高的性能。传输前使用 protobuf 编码，接收方再进行解码，
+//可以显著地降低二进制传输的大小。
+//另外一方面，protobuf 可非常适合传输结构化数据，便于通信字段的扩展。
+//protobuf 即 Protocol Buffers，Google 开发的一种数据描述语言，是一种轻便高效的结构化数据存储格式，与语言、平台无关，
+//可扩展可序列化。protobuf 以二进制方式存储，占用空间小。
 
 // 提供被其他节点访问的能力(基于http)
 
@@ -78,9 +86,15 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/octet-stream") //表示返回的是二进制数据流。
-	w.Write(view.ByteSlice())
+	body, err := proto.Marshal(&pb.Response{Value: view.ByteSlice()})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Write(body)
+	//w.Header().Set("Content-Type", "application/octet-stream") //表示返回的是二进制数据流。
+	//w.Write(view.ByteSlice())
 }
 
 //ServeHTTP 的实现逻辑是比较简单的，首先判断访问路径的前缀是否是 basePath，不是返回错误。
@@ -94,35 +108,44 @@ type httpGetter struct {
 
 //具体的 HTTP 客户端类 httpGetter，实现 PeerGetter 接口
 
-func (h *httpGetter) Get(group string, key string) ([]byte, error) {
+//ServeHTTP() 中使用 proto.Marshal() 编码 HTTP 响应。
+//Get() 中使用 proto.Unmarshal() 解码 HTTP 响应。
+
+func (h *httpGetter) Get(in *pb.Request, out *pb.Response) error {
 	u := fmt.Sprintf(
 		"%v%v/%v",
 		h.baseURL,
-		url.QueryEscape(group),
-		url.QueryEscape(key), //"my group" 会被编码为 "my%20group"，
+		url.QueryEscape(in.GetGroup()),
+		url.QueryEscape(in.GetKey()),
+		//url.QueryEscape(group),
+		//url.QueryEscape(key), //"my group" 会被编码为 "my%20group"，
 		// "special&key" 会被编码为 "special%26key"，
 		// 确保它们在 URL 查询参数中不会引发语法错误。
 	) //将 group 和 key 字符串进行 URL 编码，使它们能够安全地嵌入 URL 查询字符串中
 	res, err := http.Get(u) //发送 HTTP 请求，获取缓存数据，并将返回的结果转换为字节数组 ([]byte)。
 	//如果 HTTP 响应状态不是 200（OK），则返回错误
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server returned: %v", res.Status)
+		return fmt.Errorf("server returned: %v", res.Status)
 	}
 
 	bytes, err := ioutil.ReadAll(res.Body)
 	if err != nil {
-		return nil, fmt.Errorf("reading response body: %v", err)
+		return fmt.Errorf("reading response body: %v", err)
 	}
-
-	return bytes, nil
+	//它的作用是将 字节数据 (bytes) 解码成 Protocol Buffers 数据结构（通常是一个 Go 结构体），
+	//并将解码后的数据填充到 out 对象中。这里的 out 通常是一个指向 pb.Response 类型的指针。
+	if err = proto.Unmarshal(bytes, out); err != nil {
+		return fmt.Errorf("decoding response body: %v", err)
+	}
+	return nil
 }
 
-var _ PeerGetter = (*httpGetter)(nil)
+//var _ PeerGetter = (*httpGetter)(nil)
 
 // Set updates the pool's list of peers.
 func (p *HTTPPool) Set(peers ...string) {
